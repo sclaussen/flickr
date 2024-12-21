@@ -1,0 +1,120 @@
+#!/bin/bash
+
+# Your Flickr API credentials
+API_KEY="83b30ebbdee0f5c716eb36a436280037"
+USER_ID="182537329@N08"  # Your Flickr User ID
+
+# Directory to save the downloaded photos
+DOWNLOAD_DIR="images"
+
+# Default number of photos to fetch if not specified
+DEFAULT_NUM_PHOTOS=1
+
+# Create the download directory if it doesn't exist
+mkdir -p "$DOWNLOAD_DIR"
+
+# Function to get the largest size URL of a photo
+get_largest_photo_url() {
+    local photo_id=$1
+    local sizes_url="https://api.flickr.com/services/rest/?method=flickr.photos.getSizes&api_key=$API_KEY&photo_id=$photo_id&format=json&nojsoncallback=1"
+
+    # Get the available sizes
+    local sizes_response=$(curl -s -w "%{http_code}" "$sizes_url")
+    local http_status="${sizes_response: -3}"
+    local sizes_json="${sizes_response:0:${#sizes_response}-3}"
+
+    # Check if the request was successful
+    if [[ "$http_status" -ne 200 ]]; then
+        echo "Failed to fetch sizes for photo ID: $photo_id. HTTP Status: $http_status"
+        return 1
+    fi
+
+    # Check for Flickr API errors
+    local stat=$(echo "$sizes_json" | jq -r '.stat')
+    if [[ "$stat" != "ok" ]]; then
+        local message=$(echo "$sizes_json" | jq -r '.message')
+        echo "Failed to fetch sizes for photo ID: $photo_id. Error: $message"
+        return 1
+    fi
+
+    # Extract the URL of the largest size
+    local largest_url=$(echo "$sizes_json" | jq -r '.sizes.size | max_by(.width | tonumber) | .source')
+
+    echo "$largest_url"
+}
+
+# Function to fetch photo IDs from the user's photostream
+fetch_photo_ids() {
+    local num_photos=$1
+    local start_photo=$2
+    local page=1
+    local per_page=100
+    local fetched=0
+    local start_index=$((start_photo - 1))
+    local end_index=$((start_index + num_photos))
+
+    while [[ $fetched -lt $end_index ]]; do
+        local photos_url="https://api.flickr.com/services/rest/?method=flickr.people.getPhotos&api_key=$API_KEY&user_id=$USER_ID&per_page=$per_page&page=$page&format=json&nojsoncallback=1"
+
+        # Get the photo IDs
+        local photos_response=$(curl -s "$photos_url")
+        local photos_json=$(echo "$photos_response" | jq -r '.photos.photo[].id')
+
+        for photo_id in $photos_json; do
+            if [[ $fetched -ge $start_index && $fetched -lt $end_index ]]; then
+                echo "$photo_id"
+            fi
+            fetched=$((fetched + 1))
+            if [[ $fetched -ge $end_index ]]; then
+                break
+            fi
+        done
+
+        page=$((page + 1))
+    done
+}
+
+# Determine the number of photos to fetch based on the input parameters
+if [[ $# -eq 0 ]]; then
+    NUM_PHOTOS=$DEFAULT_NUM_PHOTOS
+    START_PHOTO=1
+elif [[ $# -eq 1 ]]; then
+    NUM_PHOTOS=$1
+    START_PHOTO=1
+elif [[ $# -eq 2 ]]; then
+    START_PHOTO=$1
+    NUM_PHOTOS=$(( $2 - $1 + 1 ))
+elif [[ $# -eq 3 ]]; then
+    START_PHOTO=$1
+    NUM_PHOTOS=$(( $3 - $2 + 1 ))
+else
+    echo "Usage: $0 [start_photo] [num_photos] or $0 [start_photo] [num_photos] [end_photo]"
+    exit 1
+fi
+
+# Fetch photo IDs
+photo_ids=$(fetch_photo_ids "$NUM_PHOTOS" "$START_PHOTO")
+
+# Initialize photo counter for naming
+photo_counter=$START_PHOTO
+
+# Download the largest size for each photo
+for photo_id in $photo_ids; do
+    largest_photo_url=$(get_largest_photo_url "$photo_id")
+
+    # Download the photo
+    if [[ -n "$largest_photo_url" ]]; then
+        file_name=$(printf "mathpath2024-%04d.jpg" "$photo_counter")
+        curl -s -L -o "$DOWNLOAD_DIR/$file_name" "$largest_photo_url"
+        if [[ $? -eq 0 ]]; then
+            echo "Downloaded $largest_photo_url to $DOWNLOAD_DIR/$file_name"
+        else
+            echo "Failed to download $largest_photo_url"
+        fi
+        photo_counter=$((photo_counter + 1))
+    else
+        echo "Failed to get the largest size for photo ID: $photo_id"
+    fi
+done
+
+echo "Download complete. Photos saved in $DOWNLOAD_DIR"
